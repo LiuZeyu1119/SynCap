@@ -71,7 +71,9 @@ venv/
 /apps/android/implementation-*.png
 /apps/android/design-qa.md
 /apps/android/public/assets/syncap/fisheye-lab.png
-/apps/android/.openai/
+# Keep only the portable, credential-free build input; ignore local hosting state.
+/apps/android/.openai/*
+!/apps/android/.openai/hosting.json
 *.log
 *.pid
 *.tmp
