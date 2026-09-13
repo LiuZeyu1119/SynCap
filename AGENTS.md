@@ -1,6 +1,6 @@
 # AI Agent 导航与执行约定
 
-先读 [README](README.md)、[最新验证记录](sdk/RELEASE_2026_09_13.md) 和当前任务所在模块。这个仓库是 SynCap，不是仅适配某一型号的 RoboBaton App。用户目标是可实际采集的数据链路，不是有按钮的演示界面。
+先读 [README](README.md)、[架构与模块关系](docs/ARCHITECTURE.md)、[最新验证记录](sdk/RELEASE_2026_09_13.md) 和当前任务所在模块。这个仓库是 SynCap，不是仅适配某一型号的 RoboBaton App。用户目标是可实际采集的数据链路，不是有按钮的演示界面。
 
 ## 工作流程
 

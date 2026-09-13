@@ -24,6 +24,8 @@
 
 | 你要做什么 | 入口 |
 | --- | --- |
+| 查看 App 源码 | [共享界面与各端宿主](apps/android/)、[共用媒体模块](sdk/android/MEDIA.md) |
+| 查看架构与模块关系 | [架构图、App / SDK 依赖图与源码导航](docs/ARCHITECTURE.md) |
 | 让 AI Agent 接手开发 | [AGENTS.md](AGENTS.md)：模块导航、约束、验证与硬件边界 |
 | 从源码运行 App、SDK | [开发指南](docs/DEVELOPMENT.md) |
 | Kotlin / Swift 接入 | [SDK 总览](sdk/README.md)、[移动 SDK](sdk/MOBILE_SDK.md) |
