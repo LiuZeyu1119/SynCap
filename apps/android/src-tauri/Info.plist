@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>用于发现并连接 SynCap 兼容头环，完成配网和离线采集控制。</string>
+  <key>NSBluetoothPeripheralUsageDescription</key>
+  <string>用于发现并连接 SynCap 兼容头环。</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>用于连接同一局域网内的头环，预览与导出采集数据。</string>
+</dict>
+</plist>

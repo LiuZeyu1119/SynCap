@@ -1,0 +1,296 @@
+#!/bin/sh
+
+export LD_LIBRARY_PATH=/usr/lib/eyesee-mpp:/usr/lib/qingguo:/usr/lib/pdet:${LD_LIBRARY_PATH:-}
+
+[ -r /etc/default/syncap-tina ] && . /etc/default/syncap-tina
+
+SERVICE=${SYNCAP_TINA_SERVICE:-/opt/syncap/syncap-tina-service}
+SERVICE_PID=${SYNCAP_TINA_SERVICE_PID:-/var/run/syncap-tina-watchdog.pid}
+SERVICE_CHILD_PID=${SYNCAP_TINA_CHILD_PID:-/var/run/syncap-tina-service.pid}
+QGAPP_PID=${SYNCAP_TINA_QGAPP_PID:-/var/run/syncap-qgapp.pid}
+STOP_MARKER=${SYNCAP_TINA_STOP_MARKER:-/var/run/syncap-tina.stop}
+LOG=${SYNCAP_TINA_LOG:-/tmp/syncap-tina-service.log}
+PROC_ROOT=${SYNCAP_TINA_PROC_ROOT:-/proc}
+SCRIPT_PATH=$0
+
+is_pid() {
+    case "${1:-}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$1" -gt 1 ] 2>/dev/null
+}
+
+# Print the Linux process start-time token (field 22). Combining this token
+# with the PID prevents a stale pidfile from matching a reused PID.
+process_start_time() (
+    target_pid=$1
+    [ -r "$PROC_ROOT/$target_pid/stat" ] || exit 1
+    IFS= read -r stat_line < "$PROC_ROOT/$target_pid/stat" || exit 1
+    stat_fields=${stat_line##*) }
+    [ "$stat_fields" != "$stat_line" ] || exit 1
+    set -- $stat_fields
+    [ "$#" -ge 20 ] || exit 1
+    [ "$1" != "Z" ] || exit 1
+    shift 19
+    printf '%s\n' "$1"
+)
+
+process_command_matches() {
+    target_pid=$1
+    expected_role=$2
+    [ -r "$PROC_ROOT/$target_pid/cmdline" ] || return 1
+    command_line=$(tr '\000' ' ' < "$PROC_ROOT/$target_pid/cmdline" 2>/dev/null) || return 1
+    case "$expected_role" in
+        watchdog)
+            case "$command_line" in
+                *"$SCRIPT_PATH"*"_watchdog"*) return 0 ;;
+            esac
+            ;;
+        service)
+            first_argument=${command_line%% *}
+            [ "$first_argument" = "$SERVICE" ] && return 0
+            ;;
+    esac
+    return 1
+}
+
+write_identity() {
+    identity_file=$1
+    target_pid=$2
+    role=$3
+    start_time=$(process_start_time "$target_pid") || return 1
+    temporary="$identity_file.tmp.$$"
+    (umask 077; printf '%s %s %s\n' "$target_pid" "$start_time" "$role" > "$temporary") || {
+        rm -f "$temporary"
+        return 1
+    }
+    mv -f "$temporary" "$identity_file"
+}
+
+# Print a PID only when the pidfile, process start time, and command all match.
+identity_pid() (
+    identity_file=$1
+    expected_role=$2
+    [ -r "$identity_file" ] || exit 1
+    IFS=' ' read -r target_pid recorded_start recorded_role extra < "$identity_file" || exit 1
+    is_pid "$target_pid" || exit 1
+    [ -z "${extra:-}" ] && [ "$recorded_role" = "$expected_role" ] || exit 1
+    kill -0 "$target_pid" 2>/dev/null || exit 1
+    current_start=$(process_start_time "$target_pid") || exit 1
+    [ "$current_start" = "$recorded_start" ] || exit 1
+    process_command_matches "$target_pid" "$expected_role" || exit 1
+    printf '%s\n' "$target_pid"
+)
+
+qgapp_process() {
+    target_pid=$1
+    is_pid "$target_pid" || return 1
+    kill -0 "$target_pid" 2>/dev/null || return 1
+    process_start_time "$target_pid" >/dev/null 2>&1 || return 1
+    [ -r "$PROC_ROOT/$target_pid/comm" ] || return 1
+    IFS= read -r process_name < "$PROC_ROOT/$target_pid/comm" || return 1
+    [ "$process_name" = "qgapp" ]
+}
+
+service_process() {
+    target_pid=$1
+    is_pid "$target_pid" || return 1
+    kill -0 "$target_pid" 2>/dev/null || return 1
+    process_start_time "$target_pid" >/dev/null 2>&1 || return 1
+    process_command_matches "$target_pid" service
+}
+
+signal_service_processes() {
+    requested_signal=$1
+    for process_dir in "$PROC_ROOT"/[0-9]*; do
+        target_pid=${process_dir##*/}
+        service_process "$target_pid" || continue
+        kill "$requested_signal" "$target_pid" 2>/dev/null || true
+    done
+}
+
+stop_qgapp() {
+    stopped=0
+    for process_dir in "$PROC_ROOT"/[0-9]*; do
+        target_pid=${process_dir##*/}
+        qgapp_process "$target_pid" || continue
+        # SIGTERM is known to hang on this firmware. A verified qgapp is killed
+        # so no producer can keep filling the 88 MiB tmpfs without the service.
+        if kill -9 "$target_pid" 2>/dev/null; then
+            echo "stopped verified qgapp pid $target_pid"
+            stopped=1
+        fi
+    done
+    rm -f "$QGAPP_PID"
+    [ "$stopped" -eq 0 ] || sleep 1
+    for process_dir in "$PROC_ROOT"/[0-9]*; do
+        target_pid=${process_dir##*/}
+        if qgapp_process "$target_pid"; then
+            echo "qgapp pid $target_pid is still running" >&2
+            return 1
+        fi
+    done
+    return 0
+}
+
+rotate_log() {
+    [ -f "$LOG" ] || return 0
+    log_size=$(wc -c < "$LOG" 2>/dev/null) || return 0
+    case "$log_size" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    if [ "$log_size" -ge 1048576 ]; then
+        rm -f "$LOG.1"
+        mv "$LOG" "$LOG.1"
+    fi
+}
+
+watchdog_loop() {
+    ulimit -c 0
+    watchdog_stop=0
+    watchdog_child=
+    trap '' HUP
+    trap '
+        watchdog_stop=1
+        child_to_stop=$(identity_pid "$SERVICE_CHILD_PID" service 2>/dev/null) || child_to_stop=
+        [ -z "$child_to_stop" ] || kill "$child_to_stop" 2>/dev/null || true
+    ' INT TERM
+
+    if ! write_identity "$SERVICE_PID" "$$" watchdog; then
+        echo "cannot persist watchdog identity" >&2
+        stop_qgapp
+        return 1
+    fi
+
+    rapid_failures=0
+    while [ "$watchdog_stop" -eq 0 ] && [ ! -e "$STOP_MARKER" ]; do
+        started_at=$(date +%s 2>/dev/null || printf '0')
+        "$SERVICE" ${SYNCAP_TINA_ARGS:-} &
+        watchdog_child=$!
+        if ! write_identity "$SERVICE_CHILD_PID" "$watchdog_child" service; then
+            kill "$watchdog_child" 2>/dev/null || true
+            wait "$watchdog_child" 2>/dev/null || true
+            exit_status=127
+        else
+            wait "$watchdog_child"
+            exit_status=$?
+        fi
+
+        if [ "$watchdog_stop" -ne 0 ] || [ -e "$STOP_MARKER" ]; then
+            child_to_stop=$(identity_pid "$SERVICE_CHILD_PID" service 2>/dev/null) || child_to_stop=
+            [ -z "$child_to_stop" ] || kill "$child_to_stop" 2>/dev/null || true
+            attempts=0
+            while identity_pid "$SERVICE_CHILD_PID" service >/dev/null 2>&1 && [ "$attempts" -lt 3 ]; do
+                sleep 1
+                attempts=$((attempts + 1))
+            done
+            child_to_stop=$(identity_pid "$SERVICE_CHILD_PID" service 2>/dev/null) || child_to_stop=
+            [ -z "$child_to_stop" ] || kill -9 "$child_to_stop" 2>/dev/null || true
+        fi
+        rm -f "$SERVICE_CHILD_PID"
+        watchdog_child=
+
+        if [ "$watchdog_stop" -ne 0 ] || [ -e "$STOP_MARKER" ]; then
+            break
+        fi
+
+        ended_at=$(date +%s 2>/dev/null || printf '0')
+        runtime=$((ended_at - started_at))
+        if [ "$runtime" -ge 15 ]; then
+            rapid_failures=1
+        else
+            rapid_failures=$((rapid_failures + 1))
+        fi
+        echo "syncap-tina service exited with status $exit_status; restarting ($rapid_failures/3)" >&2
+        if [ "$rapid_failures" -ge 3 ]; then
+            echo "syncap-tina crash loop; stopping qgapp to protect tmpfs" >&2
+            stop_qgapp
+            rm -f "$SERVICE_PID"
+            return 1
+        fi
+        sleep 1
+    done
+
+    rm -f "$SERVICE_CHILD_PID" "$SERVICE_PID"
+    return 0
+}
+
+watchdog_running() {
+    identity_pid "$SERVICE_PID" watchdog >/dev/null 2>&1
+}
+
+start_service() {
+    if watchdog_running; then
+        echo "syncap-tina already running"
+        return 0
+    fi
+    rm -f "$SERVICE_PID" "$SERVICE_CHILD_PID" "$STOP_MARKER"
+    mkdir -p /tmp/syncap-ring /opt/syncap
+    rotate_log
+    "$SCRIPT_PATH" _watchdog </dev/null >>"$LOG" 2>&1 &
+
+    attempts=0
+    while [ "$attempts" -lt 6 ]; do
+        if watchdog_running && identity_pid "$SERVICE_CHILD_PID" service >/dev/null 2>&1; then
+            echo "syncap-tina started"
+            return 0
+        fi
+        sleep 1
+        attempts=$((attempts + 1))
+    done
+    echo "syncap-tina failed to start; see $LOG" >&2
+    return 1
+}
+
+stop_service() {
+    keep_qgapp=${1:-0}
+    (umask 077; printf '%s\n' "$keep_qgapp" > "$STOP_MARKER") || return 1
+
+    child_pid=$(identity_pid "$SERVICE_CHILD_PID" service 2>/dev/null) || child_pid=
+    watchdog_pid=$(identity_pid "$SERVICE_PID" watchdog 2>/dev/null) || watchdog_pid=
+    [ -z "$child_pid" ] || kill "$child_pid" 2>/dev/null || true
+    signal_service_processes -15
+    [ -z "$watchdog_pid" ] || kill "$watchdog_pid" 2>/dev/null || true
+
+    attempts=0
+    while watchdog_running && [ "$attempts" -lt 6 ]; do
+        sleep 1
+        attempts=$((attempts + 1))
+    done
+    child_pid=$(identity_pid "$SERVICE_CHILD_PID" service 2>/dev/null) || child_pid=
+    watchdog_pid=$(identity_pid "$SERVICE_PID" watchdog 2>/dev/null) || watchdog_pid=
+    [ -z "$child_pid" ] || kill -9 "$child_pid" 2>/dev/null || true
+    signal_service_processes -9
+    [ -z "$watchdog_pid" ] || kill -9 "$watchdog_pid" 2>/dev/null || true
+    rm -f "$SERVICE_PID" "$SERVICE_CHILD_PID" "$STOP_MARKER"
+
+    if [ "$keep_qgapp" = "1" ]; then
+        echo "syncap-tina stopped for restart; qgapp left running for adoption"
+        return 0
+    fi
+    if ! stop_qgapp; then
+        echo "syncap-tina stopped, but qgapp could not be terminated" >&2
+        return 1
+    fi
+    echo "syncap-tina and qgapp stopped"
+}
+
+case "${1:-}" in
+    start) start_service ;;
+    stop) stop_service 0 ;;
+    restart) stop_service 1 && start_service ;;
+    status)
+        if watchdog_running; then
+            if identity_pid "$SERVICE_CHILD_PID" service >/dev/null 2>&1; then
+                echo "syncap-tina running"
+            else
+                echo "syncap-tina watchdog running; service restarting"
+            fi
+        else
+            echo "syncap-tina stopped"
+            exit 1
+        fi
+        ;;
+    _watchdog) watchdog_loop ;;
+    *) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 2 ;;
+esac

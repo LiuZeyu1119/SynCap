@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.library'
+    id 'maven-publish'
+}
+
+group = 'com.syncap'
+version = '0.1.1'
+
+android {
+    namespace 'com.syncap.sdk.media'
+    compileSdk 36
+    defaultConfig {
+        minSdk 24
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        consumerProguardFiles 'consumer-rules.pro'
+        ndk { abiFilters 'arm64-v8a', 'x86_64' }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    publishing { singleVariant('release') { withSourcesJar() } }
+    packaging { jniLibs { pickFirsts += ['lib/**/libc++_shared.so'] } }
+}
+
+dependencies {
+    // Keep VLC's Kotlin runtime aligned with the control SDK and its consumers.
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.2.21'
+    api 'androidx.appcompat:appcompat:1.7.1'
+    api 'org.videolan.android:libvlc-all:3.7.5'
+    api 'org.opencv:opencv:4.9.0'
+    androidTestImplementation 'androidx.test.ext:junit:1.3.0'
+    androidTestImplementation 'androidx.test:runner:1.7.0'
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            release(MavenPublication) {
+                from components.release
+                artifactId = 'syncap-media-android'
+                pom {
+                    name = 'SynCap Android Media SDK'
+                    description = 'Optional native preview and chessboard stereo calibration; no Capacitor dependency'
+                }
+            }
+        }
+        repositories {
+            maven {
+                name = 'SdkLocal'
+                url = uri('../build/maven')
+            }
+        }
+    }
+}

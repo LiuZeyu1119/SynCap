@@ -1,0 +1,117 @@
+# macOS and local editor state
+.DS_Store
+**/.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+*.key
+*.crt
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Python environments and caches
+.venv*/
+venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+# JavaScript dependencies, generated sites, and test output
+**/node_modules/
+**/dist/
+**/coverage/
+**/test-results/
+**/playwright-report/
+
+# Android, iOS, and Rust build output
+**/.gradle/
+**/build/
+**/DerivedData/
+**/xcuserdata/
+**/Pods/
+**/.cxx/
+**/.externalNativeBuild/
+**/target/
+/apps/android/ios/build-*/
+*.apk
+*.aab
+*.ipa
+*.dmg
+*.msi
+
+# Capacitor-generated platform files
+/apps/android/android/capacitor-cordova-android-plugins/
+/apps/android/android/app/src/main/assets/public/
+/apps/android/android/app/src/main/assets/capacitor.config.json
+/apps/android/android/app/src/main/assets/capacitor.plugins.json
+/apps/android/ios/capacitor-cordova-ios-plugins/
+/apps/android/ios/App/App/public/
+
+# Downloaded third-party runtimes; project scripts restore these
+/apps/android/ios/App/CapApp-SPM/Vendor/MobileVLCKit.xcframework/
+/apps/android/src-tauri/binaries/mediamtx-*
+!/apps/android/src-tauri/binaries/MediaMTX-LICENSE
+
+# Local QA packages, screenshots, logs, and temporary backups
+/artifacts/
+/apps/android/artifacts/
+/apps/android/.codex-backup-*/
+/apps/android/comparison-*.png
+/apps/android/implementation-*.png
+/apps/android/design-qa.md
+/apps/android/public/assets/syncap/fisheye-lab.png
+/apps/android/.openai/
+*.log
+*.pid
+*.tmp
+*.bak
+*.bak-*
+*.orig
+
+# Captured datasets and reconstruction output
+/dense_results/
+/map_lio_sam_0811.pcd
+*.pcd
+*.ply
+*.h264
+*.mp4
+
+# Generated device build files
+/device/*.map
+
+# Upstream reference checkout; use its own repository when needed
+/vendor/RoboBaton_4p_demo/
+
+# Device firmware and local static-analysis output are not public source
+/tina/
+/tina_ble.plist
+/tina_service.plist
+*.img
+*.mcap
+*.h265
+*.hevc
+*.nv12
+*.raw
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.so
+*.dylib
+*.a
+*.bin
+*.exe
+*.mobileprovision
+**/.build/
+**/.swiftpm/

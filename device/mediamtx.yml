@@ -1,0 +1,37 @@
+logLevel: info
+logDestinations: [stdout]
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 1024
+
+api: false
+metrics: false
+pprof: false
+playback: false
+
+rtsp: true
+rtspTransports: [tcp]
+rtspEncryption: "no"
+rtspAddress: 127.0.0.1:8554
+
+rtmp: false
+hls: false
+webrtc: false
+srt: false
+moq: false
+
+pathDefaults:
+  sourceOnDemand: false
+  rtspTransport: tcp
+  useAbsoluteTimestamp: false
+  record: false
+
+paths:
+  cam0:
+    source: rtsp://127.0.0.1:554/PRR
+  cam1:
+    source: rtsp://127.0.0.1:555/PRR
+  cam2:
+    source: rtsp://127.0.0.1:556/PRR
+  cam3:
+    source: rtsp://127.0.0.1:557/PRR

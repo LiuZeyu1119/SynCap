@@ -1,0 +1,13 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The explicit hardware test holds a bounded CPU lock; the SDK AAR does not. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Development example only: current devices expose HTTP on a trusted LAN. -->
+    <application android:label="SynCap SDK Example" android:usesCleartextTraffic="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -1,0 +1,11 @@
+<resources>
+    <style name="SynCapMediaTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+        <item name="android:background">@null</item>
+        <item name="android:windowBackground">#050505</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#050505</item>
+        <item name="android:navigationBarColor">#050505</item>
+    </style>
+</resources>

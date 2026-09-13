@@ -1,0 +1,10 @@
+SynCap Media SDK Third-Party Notices
+
+LibVLC-Android 3.7.5
+Copyright (c) VideoLAN and LibVLC contributors.
+License: GNU Lesser General Public License, version 2.1 (LGPL-2.1)
+Project and source code: https://code.videolan.org/videolan/libvlcjni
+VideoLAN: https://www.videolan.org/
+
+The complete LGPL-2.1 license text is included alongside this notice in
+LGPL-2.1.txt.

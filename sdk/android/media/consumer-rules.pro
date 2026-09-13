@@ -1,0 +1,2 @@
+-keep public class com.syncap.studio.SynCapMedia { public *; }
+-keep public class com.syncap.studio.StereoCalibrationSession { public *; }

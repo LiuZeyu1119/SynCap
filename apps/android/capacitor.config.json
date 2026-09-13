@@ -1,0 +1,13 @@
+{
+  "appId": "com.syncap.studio",
+  "appName": "SynCap Studio",
+  "webDir": "dist/client",
+  "android": {
+    "allowMixedContent": true
+  },
+  "plugins": {
+    "SystemBars": {
+      "style": "DARK"
+    }
+  }
+}

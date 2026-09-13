@@ -1,0 +1,5 @@
+.gradle/
+**/build/
+local.properties
+library/src/main/jniLibs/
+library/src/main/java/com/syncap/sdk/

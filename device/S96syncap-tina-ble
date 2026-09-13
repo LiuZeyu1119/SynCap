@@ -1,0 +1,421 @@
+#!/bin/sh
+
+SERVICE=${SYNCAP_TINA_BLE_SERVICE:-/opt/syncap/syncap-tina-ble}
+SERVICE_PID=${SYNCAP_TINA_BLE_PID:-/var/run/syncap-tina-ble.pid}
+SERVICE_CHILD_PID=${SYNCAP_TINA_BLE_CHILD_PID:-/var/run/syncap-tina-ble.child.pid}
+LOG=${SYNCAP_TINA_BLE_LOG:-/var/run/syncap-tina-ble.log}
+SERVICE_READY=${SYNCAP_TINA_BLE_READY_FILE:-/var/run/syncap-tina-ble.ready}
+MAX_RAPID_RESTARTS=${SYNCAP_TINA_BLE_MAX_RAPID_RESTARTS:-5}
+SPP_HANDLE=${SYNCAP_TINA_BLE_SPP_HANDLE:-0x10010}
+HCICONFIG=${SYNCAP_TINA_BLE_HCICONFIG:-/usr/bin/hciconfig}
+ACTIVE_SDP_PID=
+
+[ -r /etc/default/syncap-tina-ble ] && . /etc/default/syncap-tina-ble
+
+process_identity() {
+    stat_line=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    stat_fields=${stat_line##*) }
+    set -- $stat_fields
+    [ "$#" -ge 20 ] || return 1
+    stat_state=$1
+    shift 19
+    printf '%s %s\n' "$stat_state" "$1"
+}
+
+record_process() {
+    record_file=$1
+    record_pid=$2
+    record_identity=$(process_identity "$record_pid") || return 1
+    set -- $record_identity
+    [ "$1" != "Z" ] || return 1
+    record_started=$2
+    [ -n "$record_started" ] || return 1
+    printf '%s %s\n' "$record_pid" "$record_started" >"$record_file"
+}
+
+recorded_process_running() {
+    record_file=$1
+    RECORDED_PID=
+    RECORDED_STARTED=
+    [ -s "$record_file" ] || return 1
+    read RECORDED_PID RECORDED_STARTED <"$record_file" || return 1
+    [ "$RECORDED_PID" -gt 1 ] 2>/dev/null || return 1
+    [ -n "$RECORDED_STARTED" ] || return 1
+    kill -0 "$RECORDED_PID" 2>/dev/null || return 1
+    record_identity=$(process_identity "$RECORDED_PID") || return 1
+    set -- $record_identity
+    [ "$1" != "Z" ] && [ "$2" = "$RECORDED_STARTED" ]
+}
+
+helper_rfcomm_ready() {
+    helper_pid=$1
+    marker_pid=
+    marker_extra=
+    [ -s "$SERVICE_READY" ] || return 1
+    read marker_pid marker_extra <"$SERVICE_READY" || return 1
+    [ -z "$marker_extra" ] && [ "$marker_pid" = "$helper_pid" ] || return 1
+    recorded_process_running "$SERVICE_CHILD_PID" || return 1
+    [ "$RECORDED_PID" = "$helper_pid" ] || return 1
+    [ -d "/proc/$helper_pid/fd" ] && [ -r /proc/net/rfcomm ] || return 1
+    for rfcomm_inode in $(awk 'NR > 1 && $6 ~ /^[0-9]+$/ { print $6 }' /proc/net/rfcomm); do
+        for helper_fd in "/proc/$helper_pid/fd"/*; do
+            [ "$(readlink "$helper_fd" 2>/dev/null)" = "socket:[$rfcomm_inode]" ] && return 0
+        done
+    done
+    return 1
+}
+
+running() {
+    recorded_process_running "$SERVICE_PID"
+}
+
+bluetooth_prerequisites_ready() {
+    [ -d /sys/class/bluetooth/hci0 ] && pidof bluetoothd >/dev/null 2>&1
+}
+
+unblock_bluetooth() {
+    for rfkill in /sys/class/rfkill/rfkill*; do
+        [ -r "$rfkill/type" ] || continue
+        [ "$(cat "$rfkill/type" 2>/dev/null)" = "bluetooth" ] || continue
+        [ "$(cat "$rfkill/state" 2>/dev/null)" = "1" ] || echo 1 >"$rfkill/state" || return 1
+    done
+}
+
+prepare_bluetooth() {
+    unblock_bluetooth || return 1
+    # Start only the vendor UART/HCI path; this image's service wrapper depends
+    # on an absent procd and omits the compatibility SDP server required by SPP.
+    /etc/bluetooth/bt_init.sh ble_start >>"$LOG" 2>&1 ||
+        [ -d /sys/class/bluetooth/hci0 ] || return 1
+    if [ -d /sys/class/bluetooth/hci0 ] && ! pidof bluetoothd >/dev/null 2>&1; then
+        /usr/bin/bluetoothd -n -C </dev/null >>"$LOG" 2>&1 &
+    fi
+    attempts=0
+    while ! bluetooth_prerequisites_ready && [ "$attempts" -lt 15 ]; do
+        sleep 1
+        attempts=$((attempts + 1))
+    done
+    bluetooth_prerequisites_ready
+}
+
+sdp_process_running() {
+    sdp_identity=$(process_identity "$1") || return 1
+    set -- $sdp_identity
+    [ "$1" != "Z" ]
+}
+
+stop_active_sdp() {
+    [ -n "$ACTIVE_SDP_PID" ] || return 0
+    if sdp_process_running "$ACTIVE_SDP_PID"; then
+        kill "$ACTIVE_SDP_PID" 2>/dev/null || true
+        sdp_stop_attempts=0
+        while sdp_process_running "$ACTIVE_SDP_PID" && [ "$sdp_stop_attempts" -lt 10 ]; do
+            usleep 100000
+            sdp_stop_attempts=$((sdp_stop_attempts + 1))
+        done
+    fi
+    if sdp_process_running "$ACTIVE_SDP_PID"; then
+        kill -9 "$ACTIVE_SDP_PID" 2>/dev/null || true
+        sdp_stop_attempts=0
+        while sdp_process_running "$ACTIVE_SDP_PID" && [ "$sdp_stop_attempts" -lt 10 ]; do
+            usleep 100000
+            sdp_stop_attempts=$((sdp_stop_attempts + 1))
+        done
+    fi
+    if ! sdp_process_running "$ACTIVE_SDP_PID"; then
+        wait "$ACTIVE_SDP_PID" 2>/dev/null || true
+        ACTIVE_SDP_PID=
+        return 0
+    fi
+    return 1
+}
+
+run_sdp_tool() {
+    sdp_output=$1
+    shift
+    if [ -n "$ACTIVE_SDP_PID" ]; then
+        if sdp_process_running "$ACTIVE_SDP_PID"; then
+            return 124
+        fi
+        wait "$ACTIVE_SDP_PID" 2>/dev/null || true
+        ACTIVE_SDP_PID=
+    fi
+    "$@" >"$sdp_output" 2>&1 &
+    sdp_pid=$!
+    ACTIVE_SDP_PID=$sdp_pid
+    sdp_attempts=0
+    while sdp_process_running "$sdp_pid" && [ "$sdp_attempts" -lt 50 ]; do
+        usleep 100000
+        sdp_attempts=$((sdp_attempts + 1))
+    done
+    if sdp_process_running "$sdp_pid"; then
+        stop_active_sdp || true
+        return 124
+    fi
+    wait "$sdp_pid"
+    sdp_status=$?
+    ACTIVE_SDP_PID=
+    return "$sdp_status"
+}
+
+bluetooth_controller_healthy() {
+    # Explicit/startup-only probe, not a polling loop. Reuse the tracked, bounded
+    # command runner so a stuck HCI ioctl cannot accumulate probe processes.
+    hci_tmp="${LOG}.hciconfig.$$"
+    hci_status=1
+    if [ -x "$HCICONFIG" ]; then
+        run_sdp_tool "$hci_tmp" "$HCICONFIG" hci0 -a
+        hci_status=$?
+    fi
+    if [ "$hci_status" -eq 0 ] && awk '
+        /^[[:space:]]*UP[[:space:]]+RUNNING([[:space:]]|$)/ { up = 1 }
+        /^[[:space:]]*Name:[[:space:]]*/ { name = 1 }
+        /^[[:space:]]*Can.t (read|open|initialize)/ { failed = 1 }
+        END { exit up && name && !failed ? 0 : 1 }
+    ' "$hci_tmp"; then
+        rm -f "$hci_tmp"
+        return 0
+    fi
+    echo "Bluetooth controller check failed (hciconfig status $hci_status); local HCI response is not healthy" >&2
+    [ ! -r "$hci_tmp" ] || cat "$hci_tmp" >&2
+    rm -f "$hci_tmp"
+    return 1
+}
+
+spp_record_present() {
+    sdp_tmp="${LOG}.sdptool.$$"
+    if ! run_sdp_tool "$sdp_tmp" /usr/bin/sdptool get "$SPP_HANDLE"; then
+        rm -f "$sdp_tmp"
+        return 1
+    fi
+    awk '
+        /"Serial Port" \(0x1101\)/ { serial_port = 1 }
+        /^[[:space:]]*Channel:[[:space:]]*7[[:space:]]*$/ { channel = 1 }
+        END { exit serial_port && channel ? 0 : 1 }
+    ' "$sdp_tmp"
+    sdp_status=$?
+    rm -f "$sdp_tmp"
+    return "$sdp_status"
+}
+
+ensure_spp_record() {
+    [ -x /usr/bin/sdptool ] || return 1
+    spp_record_present && return 0
+    # 0x10010 is reserved for SynCap. Remove a stale or conflicting record
+    # before re-registering the exact Serial Port/channel 7 definition.
+    delete_spp_handle || true
+    sdp_tmp="${LOG}.sdptool.$$"
+    if ! run_sdp_tool "$sdp_tmp" /usr/bin/sdptool add --handle="$SPP_HANDLE" --channel=7 SP; then
+        cat "$sdp_tmp" >>"$LOG"
+        rm -f "$sdp_tmp"
+        return 1
+    fi
+    cat "$sdp_tmp" >>"$LOG"
+    rm -f "$sdp_tmp"
+    if spp_record_present; then
+        return 0
+    fi
+    delete_spp_handle || true
+    return 1
+}
+
+delete_spp_handle() {
+    [ -x /usr/bin/sdptool ] || return 0
+    sdp_tmp="${LOG}.sdptool.$$"
+    run_sdp_tool "$sdp_tmp" /usr/bin/sdptool del "$SPP_HANDLE"
+    sdp_status=$?
+    cat "$sdp_tmp" >>"$LOG"
+    rm -f "$sdp_tmp"
+    return "$sdp_status"
+}
+
+remove_spp_record() {
+    delete_spp_handle || true
+}
+
+wait_for_system_bus() {
+    attempts=0
+    while [ ! -S /var/run/dbus/system_bus_socket ] && [ "$attempts" -lt 60 ]; do
+        sleep 1
+        attempts=$((attempts + 1))
+    done
+    [ -S /var/run/dbus/system_bus_socket ]
+}
+
+stop_recorded_process() {
+    stop_file=$1
+    stop_attempts=${2:-8}
+    if ! recorded_process_running "$stop_file"; then
+        rm -f "$stop_file"
+        return 0
+    fi
+    stop_pid=$RECORDED_PID
+    kill "$stop_pid" 2>/dev/null || true
+    attempts=0
+    while recorded_process_running "$stop_file" && [ "$attempts" -lt "$stop_attempts" ]; do
+        sleep 1
+        attempts=$((attempts + 1))
+    done
+    if recorded_process_running "$stop_file"; then
+        kill -9 "$RECORDED_PID" 2>/dev/null || true
+    fi
+    rm -f "$stop_file"
+}
+
+supervisor_shutdown() {
+    trap '' INT TERM HUP
+    stop_active_sdp || true
+    stop_recorded_process "$SERVICE_CHILD_PID" 8
+    rm -f "$SERVICE_READY"
+    remove_spp_record
+    exit 0
+}
+
+supervise_service() {
+    ulimit -c 0
+    umask 077
+    trap '' HUP
+    trap supervisor_shutdown INT TERM
+    rapid_restarts=0
+    while [ "$rapid_restarts" -lt "$MAX_RAPID_RESTARTS" ]; do
+        if ! wait_for_system_bus || ! prepare_bluetooth; then
+            rapid_restarts=$((rapid_restarts + 1))
+            sleep 2
+            continue
+        fi
+        if ! bluetooth_controller_healthy; then
+            # A PID, UP flag or listening RFCOMM socket does not establish HCI
+            # responsiveness. Stop this supervisor run instead of repeatedly
+            # probing/reinitializing a wedged shared controller.
+            rm -f "$SERVICE_READY"
+            remove_spp_record
+            echo "syncap-tina-ble stopped: controller unresponsive; no automatic controller reset"
+            return 1
+        fi
+        if ! ensure_spp_record; then
+            rapid_restarts=$((rapid_restarts + 1))
+            sleep 2
+            continue
+        fi
+        helper_started=$(date +%s)
+        rm -f "$SERVICE_READY"
+        # SYNCAP_TINA_BLE_ARGS contains only daemon options, never provisioning data.
+        # shellcheck disable=SC2086
+        SYNCAP_TINA_BLE_READY_FILE="$SERVICE_READY" \
+            "$SERVICE" ${SYNCAP_TINA_BLE_ARGS:-} &
+        helper_pid=$!
+        if ! record_process "$SERVICE_CHILD_PID" "$helper_pid"; then
+            kill "$helper_pid" 2>/dev/null || true
+            wait "$helper_pid" 2>/dev/null || true
+            rm -f "$SERVICE_READY"
+            remove_spp_record
+            return 1
+        fi
+        ready_attempts=0
+        helper_ready=0
+        while recorded_process_running "$SERVICE_CHILD_PID" && [ "$ready_attempts" -lt 30 ]; do
+            if helper_rfcomm_ready "$helper_pid"; then
+                helper_ready=1
+                break
+            fi
+            sleep 1
+            ready_attempts=$((ready_attempts + 1))
+        done
+        if [ "$helper_ready" -eq 0 ] && recorded_process_running "$SERVICE_CHILD_PID"; then
+            echo "syncap-tina-ble did not open RFCOMM within 30 seconds"
+            stop_recorded_process "$SERVICE_CHILD_PID" 3
+        fi
+        wait "$helper_pid"
+        helper_status=$?
+        rm -f "$SERVICE_READY"
+        rm -f "$SERVICE_CHILD_PID"
+        helper_stopped=$(date +%s)
+        if [ $((helper_stopped - helper_started)) -ge 60 ]; then
+            rapid_restarts=0
+        else
+            rapid_restarts=$((rapid_restarts + 1))
+        fi
+        echo "syncap-tina-ble exited with status $helper_status; restart $rapid_restarts/$MAX_RAPID_RESTARTS"
+        [ "$rapid_restarts" -lt "$MAX_RAPID_RESTARTS" ] && sleep 2
+    done
+    remove_spp_record
+    rm -f "$SERVICE_READY"
+    echo "syncap-tina-ble stopped after repeated failures"
+    return 1
+}
+
+start_service() {
+    if running; then
+        echo "syncap-tina-ble supervisor already running"
+        return 0
+    fi
+    [ -x "$SERVICE" ] || {
+        echo "syncap-tina-ble binary is missing" >&2
+        return 1
+    }
+    umask 077
+    : >>"$LOG" || return 1
+    chmod 600 "$LOG"
+    rm -f "$SERVICE_PID" "$SERVICE_READY"
+    "$0" supervise </dev/null >>"$LOG" 2>&1 &
+    pid=$!
+    if ! record_process "$SERVICE_PID" "$pid"; then
+        kill "$pid" 2>/dev/null || true
+        echo "syncap-tina-ble supervisor failed to start" >&2
+        return 1
+    fi
+    sleep 1
+    if ! running; then
+        rm -f "$SERVICE_PID"
+        rm -f "$SERVICE_READY"
+        echo "syncap-tina-ble supervisor failed; see $LOG" >&2
+        return 1
+    fi
+    echo "syncap-tina-ble supervisor started"
+}
+
+stop_service() {
+    if ! running; then
+        rm -f "$SERVICE_PID"
+        stop_recorded_process "$SERVICE_CHILD_PID" 8
+        rm -f "$SERVICE_READY"
+        remove_spp_record
+        echo "syncap-tina-ble stopped"
+        return 0
+    fi
+    stop_recorded_process "$SERVICE_PID" 12
+    stop_recorded_process "$SERVICE_CHILD_PID" 8
+    rm -f "$SERVICE_READY"
+    remove_spp_record
+    # bluetoothd and hci0 are shared resources and intentionally remain active.
+    echo "syncap-tina-ble stopped"
+}
+
+case "${1:-}" in
+    start) start_service ;;
+    stop) stop_service ;;
+    restart) stop_service; start_service ;;
+    supervise) supervise_service ;;
+    status)
+        if ! running; then
+            echo "syncap-tina-ble stopped"
+            exit 1
+        elif recorded_process_running "$SERVICE_CHILD_PID" && helper_rfcomm_ready "$RECORDED_PID"; then
+            echo "syncap-tina-ble running (helper/RFCOMM listener only; use health to check controller)"
+        else
+            echo "syncap-tina-ble starting"
+        fi
+        ;;
+    health)
+        if ! bluetooth_prerequisites_ready; then
+            echo "Bluetooth controller or bluetoothd is unavailable" >&2
+            exit 1
+        fi
+        if bluetooth_controller_healthy; then
+            echo "Bluetooth controller responds to local HCI commands (not an end-to-end provisioning test)"
+        else
+            exit 1
+        fi
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status|health}" >&2; exit 2 ;;
+esac

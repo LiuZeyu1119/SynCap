@@ -1,0 +1,23 @@
+[workspace]
+members = ["core", "cli", "ffi"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["fs", "io-util", "net", "rt-multi-thread", "macros", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+futures-util = "0.3"
+url = "2"
+tempfile = "3.27"
+
+# LLVM's debug stripping can misalign a Mach-O string table on macOS 27.
+# Keep this FFI library loadable; Android packaging strips ELF separately.
+[profile.release.package.syncap-ffi]
+strip = "none"

@@ -1,0 +1,7 @@
+[bindings.kotlin]
+package_name = "com.syncap.sdk"
+cdylib_name = "syncap_ffi"
+
+[bindings.swift]
+module_name = "SynCapSDK"
+ffi_module_name = "SynCapSDKFFI"

@@ -1,0 +1,4 @@
+.build/
+.swiftpm/
+SynCapSDKFFI.xcframework/
+Sources/SynCapSDK/SynCapSDK.swift

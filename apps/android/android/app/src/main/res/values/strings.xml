@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">SynCap Studio</string>
+    <string name="title_activity_main">SynCap Studio</string>
+    <string name="package_name">com.syncap.studio</string>
+    <string name="custom_url_scheme">com.syncap.studio</string>
+</resources>

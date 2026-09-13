@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+sdk_gradle_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+if [ -n "${JAVA_HOME:-}" ]; then
+    sdk_java="$JAVA_HOME/bin/java"
+else
+    sdk_java=java
+fi
+exec "$sdk_java" -Xmx64m -Xms64m -Dorg.gradle.appname=gradlew \
+    -classpath "$sdk_gradle_dir/gradle/wrapper/gradle-wrapper.jar" \
+    org.gradle.wrapper.GradleWrapperMain "$@"

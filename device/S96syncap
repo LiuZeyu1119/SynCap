@@ -1,0 +1,140 @@
+#!/bin/sh
+
+SERVICE_DIR=/opt/syncap
+DATA_DIR=/userdata/syncap
+RUN_DIR=/var/run
+LOG_DIR=/var/log/syncap
+SERVICE_PID="$RUN_DIR/syncap-device.pid"
+BLE_PID="$RUN_DIR/syncap-ble.pid"
+CAMERA_PID="$RUN_DIR/syncap-camera.pid"
+WIFI_PID="$RUN_DIR/syncap-wifi-supervisor.pid"
+RELAY_PID="$RUN_DIR/syncap-mediamtx.pid"
+CAMERA_LOG=/tmp/cam_demo-live.log
+RELAY_LOG=/tmp/syncap-mediamtx.log
+RELAY_BIN="$SERVICE_DIR/mediamtx"
+RELAY_CONFIG="$SERVICE_DIR/mediamtx.yml"
+CLAIM_CODE_FILE=/etc/syncap/claim-code
+WIFI_CONFIG_FILE=/userdata/wpa_supplicant.conf
+CLAIM_CODE_SHA256=e150a1ec81e8e93e1eae2c3a77e66ec6dbd6a3b460f89c1d08aecf422ee401a0
+
+is_running() {
+    test -f "$1" && kill -0 "$(cat "$1")" 2>/dev/null
+}
+
+start_process() {
+    pid_file=$1
+    log_file=$2
+    shift 2
+    if is_running "$pid_file"; then
+        return 0
+    fi
+    nohup "$@" >>"$log_file" 2>&1 &
+    echo $! >"$pid_file"
+}
+
+start_camera() {
+    if is_running "$CAMERA_PID"; then
+        return 0
+    fi
+    rm -f "$CAMERA_PID"
+    if pidof cam_demo >/dev/null 2>&1; then
+        return 0
+    fi
+    : >"$CAMERA_LOG"
+    chmod 640 "$CAMERA_LOG"
+    start_process "$CAMERA_PID" "$LOG_DIR/camera-supervisor.log" \
+        /usr/bin/python3 "$SERVICE_DIR/camera_supervisor.py" --log "$CAMERA_LOG"
+}
+
+start_relay() {
+    if is_running "$RELAY_PID"; then
+        return 0
+    fi
+    rm -f "$RELAY_PID"
+    if ! test -x "$RELAY_BIN" || ! test -f "$RELAY_CONFIG"; then
+        printf 'capture relay is not installed\n' >"$RELAY_LOG"
+        return 0
+    fi
+    : >"$RELAY_LOG"
+    chmod 640 "$RELAY_LOG"
+    start_process "$RELAY_PID" "$RELAY_LOG" "$RELAY_BIN" "$RELAY_CONFIG"
+}
+
+ensure_claim_code() {
+    claim_code_metadata=$(stat -c '%F:%u:%a' "$CLAIM_CODE_FILE" 2>/dev/null)
+    claim_code_hash=$(sha256sum "$CLAIM_CODE_FILE" 2>/dev/null | awk '{print $1}')
+    if test "$claim_code_metadata" = "regular file:0:600" && \
+        test "$claim_code_hash" = "$CLAIM_CODE_SHA256"; then
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$CLAIM_CODE_FILE")" || return 1
+    claim_code_tmp="$CLAIM_CODE_FILE.tmp"
+    (umask 077 && printf '123456\n' >"$claim_code_tmp") || return 1
+    chown 0:0 "$claim_code_tmp" || { rm -f "$claim_code_tmp"; return 1; }
+    chmod 600 "$claim_code_tmp" || { rm -f "$claim_code_tmp"; return 1; }
+    mv -f "$claim_code_tmp" "$CLAIM_CODE_FILE" || { rm -f "$claim_code_tmp"; return 1; }
+}
+
+start_wifi_supervisor() {
+    if ! test -f "$WIFI_CONFIG_FILE" || test -L "$WIFI_CONFIG_FILE" || \
+        ! test "$(stat -c '%u:%a' "$WIFI_CONFIG_FILE" 2>/dev/null)" = "0:600"; then
+        return 0
+    fi
+    start_process "$WIFI_PID" "$LOG_DIR/wifi-supervisor.log" \
+        /usr/bin/python3 "$SERVICE_DIR/wifi_supervisor.py" --config "$WIFI_CONFIG_FILE"
+}
+
+start() {
+    mkdir -p "$DATA_DIR/sessions" "$LOG_DIR"
+    chmod 750 "$DATA_DIR" "$DATA_DIR/sessions" "$LOG_DIR"
+    ensure_claim_code || return 1
+    start_camera
+    start_relay
+    start_process "$SERVICE_PID" "$LOG_DIR/device.log" \
+        /usr/bin/python3 "$SERVICE_DIR/syncap_service.py" \
+        --data-dir "$DATA_DIR" --claim-code /etc/syncap/claim-code
+
+    if ! test -d /sys/class/bluetooth/hci0; then
+        /etc/init.d/bt_init.sh >>"$LOG_DIR/bluetooth-init.log" 2>&1 || true
+    fi
+    if test -d /sys/class/bluetooth/hci0; then
+        start_process "$BLE_PID" "$LOG_DIR/ble.log" \
+            /usr/bin/python3 "$SERVICE_DIR/ble_provisioning.py"
+    fi
+    start_wifi_supervisor
+}
+
+stop_process() {
+    pid_file=$1
+    if ! is_running "$pid_file"; then
+        rm -f "$pid_file"
+        return 0
+    fi
+    pid=$(cat "$pid_file")
+    kill "$pid"
+    count=0
+    while kill -0 "$pid" 2>/dev/null && test "$count" -lt 30; do
+        sleep 0.1
+        count=$((count + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid"
+    fi
+    rm -f "$pid_file"
+}
+
+stop() {
+    stop_process "$WIFI_PID"
+    stop_process "$BLE_PID"
+    stop_process "$SERVICE_PID"
+    stop_process "$RELAY_PID"
+    stop_process "$CAMERA_PID"
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

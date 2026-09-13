@@ -1,0 +1,18 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application>
+        <activity android:name="com.syncap.studio.LivePreviewActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:exported="false" android:launchMode="singleTop"
+            android:screenOrientation="sensorLandscape" android:theme="@style/SynCapMediaTheme" />
+        <activity android:name="com.syncap.studio.CalibrationActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:exported="false" android:launchMode="singleTop"
+            android:screenOrientation="sensorLandscape" android:theme="@style/SynCapMediaTheme" />
+        <provider android:name="com.syncap.studio.SynCapMediaFileProvider"
+            android:authorities="${applicationId}.syncap-media.files"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/syncap_media_paths" />
+        </provider>
+    </application>
+</manifest>

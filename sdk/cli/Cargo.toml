@@ -1,0 +1,14 @@
+[package]
+name = "syncap-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "syncap"
+path = "src/main.rs"
+
+[dependencies]
+syncap-core = { path = "../core" }
+serde_json.workspace = true
+tokio.workspace = true
