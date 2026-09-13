@@ -7,7 +7,7 @@
 - The three approved capture concepts are not alternatives. They are user-selectable modes in one Capture module: four-camera grid, single-camera monitor and readiness check.
 - The Android prototype must be capability-driven and must not hardcode four cameras or Wi-Fi as universal requirements; unsupported functions disappear from the manifest-driven UI.
 - Android provisioning treats a system-paired head ring as already claimed. Never show or request a claim code; the current `123456` value is protocol compatibility data handled internally by the app and device service.
-- Never ask users to type a Wi-Fi SSID and never populate the picker with demo networks. Read nearby networks from Android, let the user select one, and request only the password when that network is secured.
+- Never ask users to type a Wi-Fi SSID and never populate the picker with demo networks. Prefer the head ring's actual Wi-Fi scan returned over its supported Bluetooth protocol; use Android scanning only where the device flow supports it. Let the user select an ordinary Wi-Fi network or the phone's own hotspot, and request only the password when secured.
 - In installed Android builds, use the system keyboard and an `adjustResize` layout. Any provisioning sheet with text entry must keep its primary confirmation action visible while the IME is open and make the remaining content vertically scrollable.
 
 ## Prototype Instructions
